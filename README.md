@@ -84,16 +84,16 @@ data "archive_file" "lambda_package" {
 
 ### Add your workflow
 
-Now the Terraform workflow can be added to the repository.  Create the `.github/workflows/terraform.yaml` in
+Now the Terraform workflow can be added to the repository.  Create the `.github/workflows/terraform.yml` in
 your repository with the following content.
 
-Within the content, the `provider_role_arn` specified will be the arn of the role, not just the role name.
+Within the content, the `provider_role_arn_{ro,rw}` specified will be the arn of the role, not just the role name.
 
-Each region that you have defined for your workflows will also need to be added as blocks.  For example,
-in the content below, only `dev/ca-central-1` and `prod/ca-central-1` are defined.
+Each region that you have defined for your workflows will also need to be added as worksapces.  For example,
+in the content below, only `dev/us-east-1`, `prod/ca-central-1` and `prod/us-east-1` are defined.
 
 ```yaml
-# terraform.yaml
+# .github/workflows/terraform.yml
 
 name: Terraform
 
@@ -103,130 +103,122 @@ on:
   push:
     branches: main
 
-env:
-  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
-  TERRAFORM_VERSION: 1.0.5
-
 jobs:
 
-  configure:
-    name: Configure
-    runs-on: [self-hosted, Linux, AWS]
-    timeout-minutes: 1
-
-    steps:
-      - uses: Brightspace/terraform-workflows@configure/v2
-        with:
-          environment: dev/ca-central-1
-          workspace_path: terraform/environments/dev/ca-central-1
-          provider_role_arn_ro: "{ terraform plan role in your dev account }"
+  terraform:
+    uses: Brightspace/terraform-workflows/.github/workflows/workflow.yml@v3
+    secrets: inherit
+    with:
+      terraform_version: 1.2.1
+      config: |
+        # Dev-Project Account
+        - provider_role_arn_ro: "{ terraform plan role in your dev account }"
           provider_role_arn_rw: "{ terraform apply role in your dev account }"
+          workspaces:
+            - environment: dev/us-east-1
+              path: terraform/environments/dev/us-east-1
 
-      - uses: Brightspace/terraform-workflows@configure/v2
-        with:
-          environment: prod/ca-central-1
-          workspace_path: terraform/environments/prod/ca-central-1
-          provider_role_arn_ro: "{ terraform plan role in your prod account }"
+        # Prd-Project Account
+        - provider_role_arn_ro: "{ terraform plan role in your prod account }"
           provider_role_arn_rw: "{ terraform apply role in your prod account }"
+          workspaces:
+            - environment: prod/ca-central-1
+              path: terraform/environments/prod/ca-central-1
+            - environment: prod/us-east-1
+              path: terraform/environments/prod/us-east-1
+```
 
-      - id: finish
-        uses: Brightspace/terraform-workflows/finish@configure/v2
+#### Inputs
 
-    outputs:
-      environments: ${{ steps.finish.outputs.environments }}
-      config: ${{ steps.finish.outputs.config }}
+##### `config` (`Account[]`)
+
+**Required**.
+The `config` input is a YAML string which describes your terraform workspaces.
+The workspaces are grouped by account in order to de-duplicate some shared settings for the common scenario of dev/prod accounts.
+The root of the YAML document should be an array of `Account` objects.
+
+###### `Account.provider_role_arn_ro` (`string`)
+
+**Required**.
+The read-only role to use when performing terraform plans for pull requests in the account.
+Likely named `terraform-plan` and thus of the form `arn:aws:iam::{accountId}:role/terraform-plan`.
+
+###### `Account.provider_role_arn_rw` (`string`)
+
+**Required**.
+The role to use when performing terraform plan and applies for merged pull requests in the account.
+Likely named `terraform-apply` and thus of the form `arn:aws:iam::{accountId}:role/terraform-apply`.
+
+###### `Account.provider_role_tfvar` (`string`)
+
+**Optional**.
+The terraform variable to set when specifying the provider role ARN.
+Defaults to `terraform_role_arn`.
+
+###### `Account.workspaces` (`Workspace[]`)
+
+**Required**.
+An array of `Workspace` objects describing the targetted environments in the account.
+
+###### `Workspace.environment` (`string`)
+
+**Required**.
+The name of the environment that describes the targetted resources (e.g. `dev/us-east-1` or `prd-project/ca-central-1`).
+MUST match a configured GitHub environment.
+MUST be unique across all accounts and workspaces.
+
+###### `Workspace.path` (`string`)
+
+**Required**.
+The path to the terraform workspace within your resository.
+
+###### `Workspace.provider_role_tfvar` (`string`)
+
+**Optional**.
+The terraform variable to set when specifying the provider role ARN.
+Defaults to the configured account value else to `terraform_role_arn`.
+
+---
+
+##### `default_branch` (`string`)
+
+**Optional**.
+When running on the main branch, the workflow asserts that it is running on the latest commit so old builds aren't accidently re-run and applied.
+If you run into this restriction when trying to revert to an old state by running an old build, you should open a PR reverting any source changes and merge that instead.
+Defaults to `main`.
+
+---
+
+##### `refresh_on_pr` (`boolean`)
+
+**Optional**.
+Whether to refresh terraform state when running terraform plans on a pull request.
+Defaults to `true`.
+
+---
+
+##### `terraform_version` (`string`)
+
+**Required**.
+The version of terraform to install and use (e.g. `1.2.1`).
 
 
-  plan_pr:
-    name: Plan [PR]
-    runs-on: [self-hosted, Linux, AWS]
-    timeout-minutes: 10
+## Migrating from v2
 
-    if: ${{ github.event_name == 'pull_request' }}
+If migrating from v2 of terraform-workflows, then when possible v3's [reusable-workflow](#add-your-workflow) should be preferred.
+For builds that are not yet terraform-only and need additional customization the individual actions are still available; however,
+referencing these actions has changed:
 
-    needs: configure
+```diff
+- uses: Brightspace/terraform-workflows@configure/v2
++ uses: Brightspace/terraform-workflows/actions/configure@v3
 
-    strategy:
-      fail-fast: false
-      matrix:
-        environment: ${{ fromJson(needs.configure.outputs.environments) }}
+- uses: Brightspace/terraform-workflows/finish@configure/v2
++ uses: Brightspace/terraform-workflows/actions/configure/finish@v3
 
-    steps:
-    - uses: Brightspace/third-party-actions@actions/checkout
+- uses: Brightspace/terraform-workflows@plan/v2
++ uses: Brightspace/terraform-workflows/actions/plan@v3
 
-    - uses: Brightspace/terraform-workflows@plan/v2
-      with:
-        config: ${{ toJson(fromJson(needs.configure.outputs.config)[matrix.environment]) }}
-        terraform_version: ${{ env.TERRAFORM_VERSION }}
-
-
-  plan:
-    name: Plan
-    runs-on: [self-hosted, Linux, AWS]
-    timeout-minutes: 10
-
-    if: ${{ github.event_name != 'pull_request' }}
-    environment: preflight
-
-    needs: configure
-
-    strategy:
-      fail-fast: false
-      matrix:
-        environment: ${{ fromJson(needs.configure.outputs.environments) }}
-
-    steps:
-    - uses: Brightspace/third-party-actions@actions/checkout
-
-    - uses: Brightspace/terraform-workflows@plan/v2
-      with:
-        config: ${{ toJson(fromJson(needs.configure.outputs.config)[matrix.environment]) }}
-        terraform_version: ${{ env.TERRAFORM_VERSION }}
-
-
-  collect:
-    name: Collect
-    runs-on: [self-hosted, Linux, AWS]
-    timeout-minutes: 2
-
-    needs: plan
-
-    if: ${{ github.event_name != 'pull_request' }}
-
-    steps:
-    - id: collect
-      uses: Brightspace/terraform-workflows@collect/v2
-
-    outputs:
-      has_changes: ${{ steps.collect.outputs.has_changes }}
-      changed: ${{ steps.collect.outputs.changed }}
-      config: ${{ steps.collect.outputs.config }}
-
-
-  apply:
-    name: Apply
-    runs-on: [self-hosted, Linux, AWS]
-    timeout-minutes: 10
-
-    needs: collect
-
-    if: ${{ needs.collect.outputs.has_changes == 'true' }}
-
-    strategy:
-      fail-fast: false
-      matrix:
-        environment: ${{ fromJson(needs.collect.outputs.changed) }}
-
-    environment: ${{ matrix.environment }}
-    concurrency: ${{ matrix.environment }}
-
-    steps:
-    - uses: Brightspace/third-party-actions@actions/checkout
-
-    - uses: Brightspace/terraform-workflows@apply/v2
-      with:
-        config: ${{ toJson(fromJson(needs.collect.outputs.config)[matrix.environment]) }}
-
+- uses: Brightspace/terraform-workflows@apply/v2
++ uses: Brightspace/terraform-workflows/actions/apply@v3
 ```
