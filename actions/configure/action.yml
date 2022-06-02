@@ -29,6 +29,7 @@ runs:
 
     - run: echo "D2L_TF_CONFIGURE_TMP_DIR=$(mktemp -d)" >> "${GITHUB_ENV}"
       shell: bash
+      if: env.D2L_TF_CONFIGURE_TMP_DIR == ''
 
     - run: ${{ github.action_path }}/configure.sh
       shell: bash
